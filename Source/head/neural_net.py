@@ -4,6 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from past.builtins import xrange
 
+#import sys
+#sys.path.append('E:\\Documents\\1资料\\Brainmatrix\\模拟退火\\CBICR_contest\\Source\\head\\utils\\')
+from head.utils.layers import *
+from head.utils.fast_layers import *
+from head.utils.layer_utils import *
+
 
 class TwoLayerNet(object):
     
@@ -437,130 +443,230 @@ class TwoLayerNet(object):
           'val_acc_history': val_acc_history,
         }
     
-    '''
-    def train_bp_sa_lr_decay(self, X, y, X_val, y_val, 
-            learning_rate = 5e-4, learning_rate_decay = 0.95, reg=0.1, 
-            num_iters_per_sgd=1500, num_sgds = 2, num_iters_per_sa = 500, 
-            step_len = 0.001, T_max=0.1, T_min=0.005,
-            batch_size=200, verbose=False):
-     
-        Tfactor = -np.log(T_max / T_min)
+
+class FourLayerConvNet_fast(object):
+    # Without normalization
+    def __init__(self, input_dim=(3, 32, 32), num_filters=(32, 64, 128), filter_size=(7, 3, 3),
+                 num_classes=10, weight_scale=1e-3, reg=0.0,
+                 dtype=np.float32):
         
-        num_train = X.shape[0]
-        iterations_per_epoch = max(num_train / batch_size, 1)
+        self.params = {}
+        self.reg = reg
+        self.dtype = dtype
+
+        # Get input dimensions
+        C, H, W = input_dim
+
+        # Compute max pooling filter dimensions
+        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+        HP = (H-pool_param['pool_height'])/pool_param['stride']+1
+        WP = (W-pool_param['pool_width'])/pool_param['stride']+1
+
+        # Set weights and biases dimension
+        weights_dim = [(num_filters[0], C, filter_size[0], filter_size[0]),
+                        (num_filters[1], num_filters[0], filter_size[1], filter_size[1]),
+                        (num_filters[2], num_filters[1], filter_size[2], filter_size[2]),
+                        (num_filters[2], num_classes)]
+        biases_dim = [num_filters[0], num_filters[1], num_filters[2], num_classes]
+
+        # Initialize weights and biases
+        num_layers = len(weights_dim)
+        for i in range(1,num_layers+1):
+            self.params['W%d' %i] = np.random.normal(loc=0.0, scale=weight_scale,
+                                                    size=weights_dim[i-1])
+            self.params['b%d' %i] = np.zeros(biases_dim[i-1])
+
+        for k, v in self.params.items():
+            self.params[k] = v.astype(dtype)
+            
+        self.num_layers = num_layers
+
         
-        loss_history = []
-        train_acc_history = []
-        val_acc_history = []
+    def loss(self, X, y=None):
         
+        W1, b1 = self.params['W1'], self.params['b1']
+        W2, b2 = self.params['W2'], self.params['b2']
+        W3, b3 = self.params['W3'], self.params['b3']
+        W4, b4 = self.params['W4'], self.params['b4']
         
-        for it_sgd in xrange(num_sgds-1):
-            for it in xrange(num_iters_per_sgd):
+        W_list = [W1, W2, W3, W4]
+        b_list = [b1, b2, b3, b4]
 
-                X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
-                
-                loss, grads = self.loss(X_batch, y=y_batch, reg=reg, with_grads = True)
-                loss_history.append(loss)
-                
-                # SGD
-                learning_rate = (learning_rate_min + learning_rate_max) / 2 + (
-                                 learning_rate_max - learning_rate_min) / 2 * np.cos(
-                                 it / num_iters_per_sgd * np.pi)
-                
-                self.params['W1'] -= learning_rate * grads['W1']
-                self.params['W2'] -= learning_rate * grads['W2']
-                self.params['b1'] -= learning_rate * grads['b1'].ravel()
-                self.params['b2'] -= learning_rate * grads['b2'].ravel()
-                
-                if verbose and it % 100 == 0:
-                    print('it_sgd sgd %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
-                            it_sgd+1, num_sgds, it, num_iters_per_sgd, loss,
-                            (self.predict(X_batch) == y_batch).mean()))
-                
-                if it % iterations_per_epoch == 0:
-                    # Check accuracy
-                    train_acc = (self.predict(X_batch) == y_batch).mean()
-                    val_acc = (self.predict(X_val) == y_val).mean()
-                    train_acc_history.append(train_acc)
-                    val_acc_history.append(val_acc)
-                
-            # SA
-            loss_past = loss_new = loss
-            T = np.copy(T_max)
-            for it in xrange(num_iters_per_sa):
-                W1, b1 = self.params['W1'], self.params['b1']
-                W2, b2 = self.params['W2'], self.params['b2']
-                self.params['W1'] = W1 + step_len * np.random.uniform(-1, 1, W1.shape) * T
-                self.params['b1'] = b1 + step_len * np.random.uniform(-1, 1, b1.shape) * T
-                self.params['W2'] = W2 + step_len * np.random.uniform(-1, 1, W2.shape) * T
-                self.params['b2'] = b2 + step_len * np.random.uniform(-1, 1, b2.shape) * T
+        # pass conv_param to the forward pass for the convolutional layer
+        conv_param = {'stride': 1, 'pad': 1}
+
+        # pass pool_param to the forward pass for the max-pooling layer
+        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+
+        scores = None
+        
+        conv_cache = {}
+        conv_relu_cache = {}
+        max_cache = {}
+        x = X.copy()
+        for i in range(self.num_layers-2):
+            x, conv_cache[i] = conv_forward_fast(x, W_list[i], b_list[i], conv_param)
+            x, conv_relu_cache[i] = relu_forward(x)
+            x, max_cache[i] = max_pool_forward_fast(x, pool_param)
+            
+        x, conv_cache[self.num_layers-2] = conv_forward_fast(
+            x, W_list[self.num_layers-2], b_list[self.num_layers-2], conv_param)
+        
+        x, conv_relu_cache[self.num_layers-2] = relu_forward(x)
+
+        _, _, pool_height_last, pool_width_last = x.shape
+        pool_param_last = {'pool_height': pool_height_last, 'pool_width': pool_width_last, 'stride': 1}
+        x, max_cache[self.num_layers-2] = max_pool_forward_fast(x, pool_param_last)
+
+        # Compute scores
+        scores, scores_cache = affine_forward(x, W_list[-1], b_list[-1])
+
+        if y is None:
+            return scores
+
+        loss, grads = 0, {}
+
+        # Compute loss and gradient with respect to the softmax function
+        loss, dout = softmax_loss(scores, y)
+
+        # Add L2 regularization to the loss function
+        for i in range(self.num_layers):
+            loss += 0.5 * self.reg * np.sum(W_list[i] * W_list[i])
+
+        # Backward
+        daffine, grads['W4'], grads['b4'] = affine_backward(dout, scores_cache)
+        dmax_pool = max_pool_backward_fast(daffine, max_cache[2])  
+
+        dX = relu_backward(dmax_pool, conv_relu_cache[2])
+        dX, grads['W3'], grads['b3'] = conv_backward_fast(dX, conv_cache[2])
+                       
+        dmax_pool = max_pool_backward_fast(dX, max_cache[1])             
+        dX = relu_backward(dmax_pool, conv_relu_cache[1])
+        dX, grads['W2'], grads['b2'] = conv_backward_fast(dX, conv_cache[1])
+
+        dmax_pool = max_pool_backward_fast(dX, max_cache[0])           
+        dX = relu_backward(dmax_pool, conv_relu_cache[0])
+        dX, grads['W1'], grads['b1'] = conv_backward_fast(dX, conv_cache[0])
 
 
-                loss_new, grads_new = self.loss(X_batch, y = y_batch, reg = reg, with_grads = True)
+        # Add regularization to the gradients
+        grads['W4'] += self.reg*W4
+        grads['W3'] += self.reg*W3
+        grads['W2'] += self.reg*W2
+        grads['W1'] += self.reg*W1
 
-                loss_new = self.loss(X_batch, y = y_batch, reg = reg)
+        return loss, grads
 
-                #Metropolis Method
-                ratio = np.exp((loss_past - loss_new) / T)
-                thres = np.random.uniform(0,1)
-                if ratio < thres : # Reject new solution
-                    self.params['W1'] = W1
-                    self.params['b1'] = b1
-                    self.params['W2'] = W2
-                    self.params['b2'] = b2
-                else : #Accept new solution
-                    loss_past = loss_new
 
-                #stats loging
-                loss_history.append(loss_past)
+class FourLayerConvNet_naive(object):
+    # Without normalization
+    def __init__(self, input_dim=(3, 32, 32), num_filters=(32, 64, 128), filter_size=(7, 3, 3),
+                 num_classes=10, weight_scale=1e-3, reg=0.0,
+                 dtype=np.float32):
+        
+        self.params = {}
+        self.reg = reg
+        self.dtype = dtype
 
-                if verbose and it % 100 == 0:
-                    print('it_sgd sa %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
-                            it_sgd+1, num_sgds, it, num_iters_per_sa, loss_past,
-                            (self.predict(X_batch) == y_batch).mean()))
+        # Get input dimensions
+        C, H, W = input_dim
 
-                # Every epoch, check train and val accuracy and decay learning rate.
-                if it % iterations_per_epoch == 0:
-                    # Check accuracy
-                    train_acc = (self.predict(X_batch) == y_batch).mean()
-                    val_acc = (self.predict(X_val) == y_val).mean()
-                    train_acc_history.append(train_acc)
-                    val_acc_history.append(val_acc)
+        # Compute max pooling filter dimensions
+        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+        HP = (H-pool_param['pool_height'])/pool_param['stride']+1
+        WP = (W-pool_param['pool_width'])/pool_param['stride']+1
 
-                T = T_max * np.exp(Tfactor * it / num_iters_per_sa)
-                
-                
-        for it in xrange(num_iters_per_sgd):
-            X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
+        # Set weights and biases dimension
+        weights_dim = [(num_filters[0], C, filter_size[0], filter_size[0]),
+                        (num_filters[1], num_filters[0], filter_size[1], filter_size[1]),
+                        (num_filters[2], num_filters[1], filter_size[2], filter_size[2]),
+                        (num_filters[2], num_classes)]
+        biases_dim = [num_filters[0], num_filters[1], num_filters[2], num_classes]
 
-            loss, grads = self.loss(X_batch, y=y_batch, reg=reg, with_grads = True)
-            loss_history.append(loss)
+        # Initialize weights and biases
+        num_layers = len(weights_dim)
+        for i in range(1,num_layers+1):
+            self.params['W%d' %i] = np.random.normal(loc=0.0, scale=weight_scale,
+                                                    size=weights_dim[i-1])
+            self.params['b%d' %i] = np.zeros(biases_dim[i-1])
 
-            # SGD
-            learning_rate = (learning_rate_min + learning_rate_max) / 2 + (
-                             learning_rate_max - learning_rate_min) / 2 * np.cos(
-                             it / num_iters_per_sgd * np.pi)
+        for k, v in self.params.items():
+            self.params[k] = v.astype(dtype)
+            
+        self.num_layers = num_layers
 
-            self.params['W1'] -= learning_rate * grads['W1']
-            self.params['W2'] -= learning_rate * grads['W2']
-            self.params['b1'] -= learning_rate * grads['b1'].ravel()
-            self.params['b2'] -= learning_rate * grads['b2'].ravel()
+        
+    def loss(self, X, y=None):
+        
+        W1, b1 = self.params['W1'], self.params['b1']
+        W2, b2 = self.params['W2'], self.params['b2']
+        W3, b3 = self.params['W3'], self.params['b3']
+        W4, b4 = self.params['W4'], self.params['b4']
+        
+        W_list = [W1, W2, W3, W4]
+        b_list = [b1, b2, b3, b4]
 
-            if verbose and it % 100 == 0:
-                print('it_sgd sgd %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
-                        num_sgds, num_sgds, it, num_iters_per_sgd, loss,
-                        (self.predict(X_batch) == y_batch).mean()))
+        # pass conv_param to the forward pass for the convolutional layer
+        conv_param = {'stride': 1, 'pad': 1}
 
-            if it % iterations_per_epoch == 0:
-                # Check accuracy
-                train_acc = (self.predict(X_batch) == y_batch).mean()
-                val_acc = (self.predict(X_val) == y_val).mean()
-                train_acc_history.append(train_acc)
-                val_acc_history.append(val_acc)
+        # pass pool_param to the forward pass for the max-pooling layer
+        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
 
-        return {
-          'loss_history': loss_history,
-          'train_acc_history': train_acc_history,
-          'val_acc_history': val_acc_history,
-        }
-        '''
+        scores = None
+        
+        conv_cache = {}
+        conv_relu_cache = {}
+        max_cache = {}
+        x = X.copy()
+        for i in range(self.num_layers-2):
+            x, conv_cache[i] = conv_forward_naive(x, W_list[i], b_list[i], conv_param)
+            x, conv_relu_cache[i] = relu_forward(x)
+            x, max_cache[i] = max_pool_forward_naive(x, pool_param)
+            
+        x, conv_cache[self.num_layers-2] = conv_forward_naive(
+            x, W_list[self.num_layers-2], b_list[self.num_layers-2], conv_param)
+        
+        x, conv_relu_cache[self.num_layers-2] = relu_forward(x)
+
+        _, _, pool_height_last, pool_width_last = x.shape
+        pool_param_last = {'pool_height': pool_height_last, 'pool_width': pool_width_last, 'stride': 1}
+        x, max_cache[self.num_layers-2] = max_pool_forward_naive(x, pool_param_last)
+
+        # Compute scores
+        scores, scores_cache = affine_forward(x, W_list[-1], b_list[-1])
+
+        if y is None:
+            return scores
+
+        loss, grads = 0, {}
+
+        # Compute loss and gradient with respect to the softmax function
+        loss, dout = softmax_loss(scores, y)
+
+        # Add L2 regularization to the loss function
+        for i in range(self.num_layers):
+            loss += 0.5 * self.reg * np.sum(W_list[i] * W_list[i])
+
+        # Backward
+        daffine, grads['W4'], grads['b4'] = affine_backward(dout, scores_cache)
+        dmax_pool = max_pool_backward_naive(daffine, max_cache[2])  
+
+        dX = relu_backward(dmax_pool, conv_relu_cache[2])
+        dX, grads['W3'], grads['b3'] = conv_backward_naive(dX, conv_cache[2])
+                       
+        dmax_pool = max_pool_backward_naive(dX, max_cache[1])             
+        dX = relu_backward(dmax_pool, conv_relu_cache[1])
+        dX, grads['W2'], grads['b2'] = conv_backward_naive(dX, conv_cache[1])
+
+        dmax_pool = max_pool_backward_naive(dX, max_cache[0])           
+        dX = relu_backward(dmax_pool, conv_relu_cache[0])
+        dX, grads['W1'], grads['b1'] = conv_backward_naive(dX, conv_cache[0])
+
+
+        # Add regularization to the gradients
+        grads['W4'] += self.reg*W4
+        grads['W3'] += self.reg*W3
+        grads['W2'] += self.reg*W2
+        grads['W1'] += self.reg*W1
+
+        return loss, grads
