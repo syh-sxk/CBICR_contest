@@ -35,7 +35,7 @@ class TwoLayerNet(object):
 
         scores, hidden_layer = self.__fwd_pass(X, with_hidden = True)
     
-        #Cross_entrophy
+        #Cross_entropy
         loss = None
         exp_scores = np.exp(scores - np.max(scores, axis=1, keepdims=True))
         probs = exp_scores/np.sum(exp_scores,axis=1,keepdims=True)
@@ -115,6 +115,7 @@ class TwoLayerNet(object):
 
             if verbose and it % 100 == 0:
                 print('iteration %d / %d: loss %f' % (it, num_iters, loss))
+                print('iteration %d / %d: train_acc %f' % ((self.predict(X_batch) == y_batch).mean()))
 
             # Every epoch, check train and val accuracy and decay learning rate.
             if it % iterations_per_epoch == 0:
@@ -129,6 +130,7 @@ class TwoLayerNet(object):
                 learning_rate *= learning_rate_decay
 
         return {
+          'params': self.params,
           'loss_history': loss_history,
           'train_acc_history': train_acc_history,
           'val_acc_history': val_acc_history,
@@ -137,9 +139,10 @@ class TwoLayerNet(object):
     #Use Simulated anneling to train this model (Metropolis method)
     def train_sa(self, X, y, X_val, y_val,
             reg=5e-6, num_iters=100, step_len = 0.01,
-            batch_size=200, T_max=10, T_min=0.1, verbose=False):
+            batch_size=200, T_max=1, T_min=0.001, verbose=False):
         
-      
+        acc = 0
+        rej = 0
         T = np.copy(T_max)
         Tfactor = -np.log(T_max / T_min)
         
@@ -158,7 +161,8 @@ class TwoLayerNet(object):
             W2, b2 = self.params['W2'], self.params['b2']
   
             X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
-        
+            
+            # multiply T
             self.params['W1'] = W1 + step_len * np.random.uniform(-1, 1, W1.shape) * T
             self.params['b1'] = b1 + step_len * np.random.uniform(-1, 1, b1.shape) * T
             self.params['W2'] = W2 + step_len * np.random.uniform(-1, 1, W2.shape) * T
@@ -166,22 +170,30 @@ class TwoLayerNet(object):
             
             loss_new = self.loss(X_batch, y = y_batch, reg = reg)
             
+            #print('it:', it)
+            #print('loss_past:', loss_past, '  loss_new:', loss_new)
             #Metropolis Method
             ratio = np.exp((loss_past - loss_new) / T)
+            #print('T:', T, 'ratio:', ratio) 
             thres = np.random.uniform(0,1)
             if ratio < thres : # Reject new solution
                 self.params['W1'] = W1
                 self.params['b1'] = b1
                 self.params['W2'] = W2
                 self.params['b2'] = b2
+                rej += 1
             else : #Accept new solution
                 loss_past = loss_new
-            
+                acc += 1
+
             #stats loging
             loss_history.append(loss_past)
             
             if verbose and it % 100 == 0:
                 print('iteration %d / %d: loss %f' % (it, num_iters, loss_past))
+                print('iteration %d / %d: train_acc %f' % ((self.predict(X_batch) == y_batch).mean()))
+                print('Reject:', rej, '  Accept:', acc)
+                
                 #print(train_acc)
 
             # Every epoch, check train and val accuracy and decay learning rate.
@@ -196,6 +208,7 @@ class TwoLayerNet(object):
             T = T_max * np.exp(Tfactor * it / num_iters)
                 
         return {
+           'params': self.params,
           'loss_history': loss_history,
           'train_acc_history': train_acc_history,
           'val_acc_history': val_acc_history,
@@ -249,7 +262,10 @@ class TwoLayerNet(object):
             dist1 = self.__normsqr(W1_rand) + self.__normsqr(b1_rand) + self.__normsqr(W2_rand) + self.__normsqr(b2_rand) #f(i -> j)
             dist2 = self.__normsqr(W1_dist_new) + self.__normsqr(W2_dist_new) + self.__normsqr(b1_dist_new) + self.__normsqr(b2_dist_new) #f(j -> i)
             ratio = (loss_past - loss_new) / T
+            #ratio_tmp = ratio
             ratio += (dist2 - dist1) / (2 * sigma * sigma * step_len * step_len)
+            #print('Before considering dist:', ratio_tmp, '  After considering dist:', ratio)
+            
             if ratio < 0: #Ratio could be very big number, a precaution for exp
                 ratio = np.exp(ratio)
             else :
@@ -291,3 +307,260 @@ class TwoLayerNet(object):
           'train_acc_history': train_acc_history,
           'val_acc_history': val_acc_history,
         }
+    
+    
+    # Experiment by SXK
+    def train_bp_sa(self, X, y, X_val, y_val, 
+            learning_rate_max = 1e-3, learning_rate_min = 1e-4, reg=0.1, 
+            num_iters_per_sgd=1500, num_sgds = 2, num_iters_per_sa = 500, 
+            step_len = 0.001, T_max=0.1, T_min=0.005, if_sa = True,
+            batch_size=200, verbose=False):
+     
+        Tfactor = -np.log(T_max / T_min)
+        
+        num_train = X.shape[0]
+        iterations_per_epoch = max(num_train / batch_size, 1)
+        
+        loss_history = []
+        train_acc_history = []
+        val_acc_history = []
+        
+        
+        for it_sgd in xrange(num_sgds-1):
+            for it in xrange(num_iters_per_sgd):
+
+                X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
+                
+                loss, grads = self.loss(X_batch, y=y_batch, reg=reg, with_grads = True)
+                loss_history.append(loss)
+                
+                # SGD
+                learning_rate = (learning_rate_min + learning_rate_max) / 2 + (
+                                 learning_rate_max - learning_rate_min) / 2 * np.cos(
+                                 it / num_iters_per_sgd * np.pi)
+                
+                self.params['W1'] -= learning_rate * grads['W1']
+                self.params['W2'] -= learning_rate * grads['W2']
+                self.params['b1'] -= learning_rate * grads['b1'].ravel()
+                self.params['b2'] -= learning_rate * grads['b2'].ravel()
+                
+                if verbose and it % 100 == 0:
+                    print('it_sgd sgd %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
+                            it_sgd+1, num_sgds, it, num_iters_per_sgd, loss,
+                            (self.predict(X_batch) == y_batch).mean()))
+                
+                if it % iterations_per_epoch == 0:
+                    # Check accuracy
+                    train_acc = (self.predict(X_batch) == y_batch).mean()
+                    val_acc = (self.predict(X_val) == y_val).mean()
+                    train_acc_history.append(train_acc)
+                    val_acc_history.append(val_acc)
+                
+            # SA
+            if if_sa:
+                loss_past = loss_new = loss
+                T = np.copy(T_max)
+                for it in xrange(num_iters_per_sa):
+                    W1, b1 = self.params['W1'], self.params['b1']
+                    W2, b2 = self.params['W2'], self.params['b2']
+                    self.params['W1'] = W1 + step_len * np.random.uniform(-1, 1, W1.shape) * T
+                    self.params['b1'] = b1 + step_len * np.random.uniform(-1, 1, b1.shape) * T
+                    self.params['W2'] = W2 + step_len * np.random.uniform(-1, 1, W2.shape) * T
+                    self.params['b2'] = b2 + step_len * np.random.uniform(-1, 1, b2.shape) * T
+
+
+                    loss_new, grads_new = self.loss(X_batch, y = y_batch, reg = reg, with_grads = True)
+
+                    loss_new = self.loss(X_batch, y = y_batch, reg = reg)
+
+                    #Metropolis Method
+                    ratio = np.exp((loss_past - loss_new) / T)
+                    thres = np.random.uniform(0,1)
+                    if ratio < thres : # Reject new solution
+                        self.params['W1'] = W1
+                        self.params['b1'] = b1
+                        self.params['W2'] = W2
+                        self.params['b2'] = b2
+                    else : #Accept new solution
+                        loss_past = loss_new
+
+                    #stats loging
+                    loss_history.append(loss_past)
+
+                    if verbose and it % 100 == 0:
+                        print('it_sgd sa %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
+                                it_sgd+1, num_sgds, it, num_iters_per_sa, loss_past,
+                                (self.predict(X_batch) == y_batch).mean()))
+
+                    # Every epoch, check train and val accuracy and decay learning rate.
+                    if it % iterations_per_epoch == 0:
+                        # Check accuracy
+                        train_acc = (self.predict(X_batch) == y_batch).mean()
+                        val_acc = (self.predict(X_val) == y_val).mean()
+                        train_acc_history.append(train_acc)
+                        val_acc_history.append(val_acc)
+
+                    T = T_max * np.exp(Tfactor * it / num_iters_per_sa)
+                
+                
+        for it in xrange(num_iters_per_sgd):
+            X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
+
+            loss, grads = self.loss(X_batch, y=y_batch, reg=reg, with_grads = True)
+            loss_history.append(loss)
+
+            # SGD
+            learning_rate = (learning_rate_min + learning_rate_max) / 2 + (
+                             learning_rate_max - learning_rate_min) / 2 * np.cos(
+                             it / num_iters_per_sgd * np.pi)
+
+            self.params['W1'] -= learning_rate * grads['W1']
+            self.params['W2'] -= learning_rate * grads['W2']
+            self.params['b1'] -= learning_rate * grads['b1'].ravel()
+            self.params['b2'] -= learning_rate * grads['b2'].ravel()
+
+            if verbose and it % 100 == 0:
+                print('it_sgd sgd %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
+                        num_sgds, num_sgds, it, num_iters_per_sgd, loss,
+                        (self.predict(X_batch) == y_batch).mean()))
+
+            if it % iterations_per_epoch == 0:
+                # Check accuracy
+                train_acc = (self.predict(X_batch) == y_batch).mean()
+                val_acc = (self.predict(X_val) == y_val).mean()
+                train_acc_history.append(train_acc)
+                val_acc_history.append(val_acc)
+
+        return {
+          'loss_history': loss_history,
+          'train_acc_history': train_acc_history,
+          'val_acc_history': val_acc_history,
+        }
+    
+    '''
+    def train_bp_sa_lr_decay(self, X, y, X_val, y_val, 
+            learning_rate = 5e-4, learning_rate_decay = 0.95, reg=0.1, 
+            num_iters_per_sgd=1500, num_sgds = 2, num_iters_per_sa = 500, 
+            step_len = 0.001, T_max=0.1, T_min=0.005,
+            batch_size=200, verbose=False):
+     
+        Tfactor = -np.log(T_max / T_min)
+        
+        num_train = X.shape[0]
+        iterations_per_epoch = max(num_train / batch_size, 1)
+        
+        loss_history = []
+        train_acc_history = []
+        val_acc_history = []
+        
+        
+        for it_sgd in xrange(num_sgds-1):
+            for it in xrange(num_iters_per_sgd):
+
+                X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
+                
+                loss, grads = self.loss(X_batch, y=y_batch, reg=reg, with_grads = True)
+                loss_history.append(loss)
+                
+                # SGD
+                learning_rate = (learning_rate_min + learning_rate_max) / 2 + (
+                                 learning_rate_max - learning_rate_min) / 2 * np.cos(
+                                 it / num_iters_per_sgd * np.pi)
+                
+                self.params['W1'] -= learning_rate * grads['W1']
+                self.params['W2'] -= learning_rate * grads['W2']
+                self.params['b1'] -= learning_rate * grads['b1'].ravel()
+                self.params['b2'] -= learning_rate * grads['b2'].ravel()
+                
+                if verbose and it % 100 == 0:
+                    print('it_sgd sgd %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
+                            it_sgd+1, num_sgds, it, num_iters_per_sgd, loss,
+                            (self.predict(X_batch) == y_batch).mean()))
+                
+                if it % iterations_per_epoch == 0:
+                    # Check accuracy
+                    train_acc = (self.predict(X_batch) == y_batch).mean()
+                    val_acc = (self.predict(X_val) == y_val).mean()
+                    train_acc_history.append(train_acc)
+                    val_acc_history.append(val_acc)
+                
+            # SA
+            loss_past = loss_new = loss
+            T = np.copy(T_max)
+            for it in xrange(num_iters_per_sa):
+                W1, b1 = self.params['W1'], self.params['b1']
+                W2, b2 = self.params['W2'], self.params['b2']
+                self.params['W1'] = W1 + step_len * np.random.uniform(-1, 1, W1.shape) * T
+                self.params['b1'] = b1 + step_len * np.random.uniform(-1, 1, b1.shape) * T
+                self.params['W2'] = W2 + step_len * np.random.uniform(-1, 1, W2.shape) * T
+                self.params['b2'] = b2 + step_len * np.random.uniform(-1, 1, b2.shape) * T
+
+
+                loss_new, grads_new = self.loss(X_batch, y = y_batch, reg = reg, with_grads = True)
+
+                loss_new = self.loss(X_batch, y = y_batch, reg = reg)
+
+                #Metropolis Method
+                ratio = np.exp((loss_past - loss_new) / T)
+                thres = np.random.uniform(0,1)
+                if ratio < thres : # Reject new solution
+                    self.params['W1'] = W1
+                    self.params['b1'] = b1
+                    self.params['W2'] = W2
+                    self.params['b2'] = b2
+                else : #Accept new solution
+                    loss_past = loss_new
+
+                #stats loging
+                loss_history.append(loss_past)
+
+                if verbose and it % 100 == 0:
+                    print('it_sgd sa %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
+                            it_sgd+1, num_sgds, it, num_iters_per_sa, loss_past,
+                            (self.predict(X_batch) == y_batch).mean()))
+
+                # Every epoch, check train and val accuracy and decay learning rate.
+                if it % iterations_per_epoch == 0:
+                    # Check accuracy
+                    train_acc = (self.predict(X_batch) == y_batch).mean()
+                    val_acc = (self.predict(X_val) == y_val).mean()
+                    train_acc_history.append(train_acc)
+                    val_acc_history.append(val_acc)
+
+                T = T_max * np.exp(Tfactor * it / num_iters_per_sa)
+                
+                
+        for it in xrange(num_iters_per_sgd):
+            X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
+
+            loss, grads = self.loss(X_batch, y=y_batch, reg=reg, with_grads = True)
+            loss_history.append(loss)
+
+            # SGD
+            learning_rate = (learning_rate_min + learning_rate_max) / 2 + (
+                             learning_rate_max - learning_rate_min) / 2 * np.cos(
+                             it / num_iters_per_sgd * np.pi)
+
+            self.params['W1'] -= learning_rate * grads['W1']
+            self.params['W2'] -= learning_rate * grads['W2']
+            self.params['b1'] -= learning_rate * grads['b1'].ravel()
+            self.params['b2'] -= learning_rate * grads['b2'].ravel()
+
+            if verbose and it % 100 == 0:
+                print('it_sgd sgd %d / %d, iteration %d / %d: loss %4.2f, train_acc %4.2f' % (
+                        num_sgds, num_sgds, it, num_iters_per_sgd, loss,
+                        (self.predict(X_batch) == y_batch).mean()))
+
+            if it % iterations_per_epoch == 0:
+                # Check accuracy
+                train_acc = (self.predict(X_batch) == y_batch).mean()
+                val_acc = (self.predict(X_val) == y_val).mean()
+                train_acc_history.append(train_acc)
+                val_acc_history.append(val_acc)
+
+        return {
+          'loss_history': loss_history,
+          'train_acc_history': train_acc_history,
+          'val_acc_history': val_acc_history,
+        }
+        '''
