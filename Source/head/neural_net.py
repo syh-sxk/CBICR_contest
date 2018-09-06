@@ -445,9 +445,9 @@ class TwoLayerNet(object):
     
 
 class FourLayerConvNet_fast(object):
-    # Without normalization
+    # Add batch normalization
     def __init__(self, input_dim=(3, 32, 32), num_filters=(32, 64, 128), filter_size=(7, 3, 3),
-                 num_classes=10, weight_scale=1e-3, reg=0.0,
+                 num_classes=10, weight_scale=1e-3, reg=0.0, use_batchnorm = False,
                  dtype=np.float32):
         
         self.params = {}
@@ -458,9 +458,10 @@ class FourLayerConvNet_fast(object):
         C, H, W = input_dim
 
         # Compute max pooling filter dimensions
-        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
-        HP = (H-pool_param['pool_height'])/pool_param['stride']+1
-        WP = (W-pool_param['pool_width'])/pool_param['stride']+1
+        self.conv_param = {'stride': 1, 'pad': 1}
+        self.pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+        HP = (H-self.pool_param['pool_height'])/self.pool_param['stride']+1
+        WP = (W-self.pool_param['pool_width'])/self.pool_param['stride']+1
 
         # Set weights and biases dimension
         weights_dim = [(num_filters[0], C, filter_size[0], filter_size[0]),
@@ -469,20 +470,52 @@ class FourLayerConvNet_fast(object):
                         (num_filters[2], num_classes)]
         biases_dim = [num_filters[0], num_filters[1], num_filters[2], num_classes]
 
+        num_params = num_filters[0]*C*filter_size[0]**2 + num_filters[1]*num_filters[0]*filter_size[1]**2 + \
+                 num_filters[2]*num_filters[1]*filter_size[2]**2 + num_filters[2]*num_classes + \
+                 num_filters[0] + num_filters[1] + num_filters[2] + num_classes
+                
+        print('Number of parameters: ', num_params)
+        
+        # Calculate the dimensions of each feature maps (to decide the dimensions of BN params).
+        if use_batchnorm:
+            #Assert input is square
+            x_size1 = ((input_dim[1]+2*self.conv_param['pad']-filter_size[1])//self.conv_param['stride']+1)**2 
+            x_dim1 = int(num_filters[0] * x_size1)
+
+            #Assert pool size is square
+            x_size2 = ((x_size1 - self.pool_param['pool_height']) // self.pool_param['stride'] + 1) ** 2 
+            x_size2 = ((x_size2+2*self.conv_param['pad']-filter_size[2])//self.conv_param['stride']+1)**2 
+            x_dim2 = int(num_filters[1] * x_size2)
+
+            x_size3 = ((x_size2 - self.pool_param['pool_height']) // self.pool_param['stride'] + 1) ** 2
+            x_size3 = ((x_size3+2*self.conv_param['pad']-filter_size[2])//self.conv_param['stride']+1)**2 
+            x_dim3 = int(num_filters[2] * x_size3)
+
+            x_dims = [x_dim1, x_dim2, x_dim3, num_filters[2]]
+
         # Initialize weights and biases
         num_layers = len(weights_dim)
         for i in range(1,num_layers+1):
             self.params['W%d' %i] = np.random.normal(loc=0.0, scale=weight_scale,
                                                     size=weights_dim[i-1])
             self.params['b%d' %i] = np.zeros(biases_dim[i-1])
+            
+            if use_batchnorm:
+                self.params['gamma%d' %i] = np.ones(x_dims[i-1])
+                self.params['beta%d' %i] = np.zeros(x_dims[i-1])
 
         for k, v in self.params.items():
             self.params[k] = v.astype(dtype)
             
         self.num_layers = num_layers
+        self.use_batchnorm = use_batchnorm
 
         
     def loss(self, X, y=None):
+        mode = 'test' if y is None else 'train'
+        
+        bn_param = {}
+        bn_param['mode'] = mode
         
         W1, b1 = self.params['W1'], self.params['b1']
         W2, b2 = self.params['W2'], self.params['b2']
@@ -491,26 +524,44 @@ class FourLayerConvNet_fast(object):
         
         W_list = [W1, W2, W3, W4]
         b_list = [b1, b2, b3, b4]
+        
+        use_batchnorm = self.use_batchnorm
+        if use_batchnorm:
+            gamma1, beta1 = self.params['gamma1'], self.params['beta1']
+            gamma2, beta2 = self.params['gamma2'], self.params['beta2']
+            gamma3, beta3 = self.params['gamma3'], self.params['beta3']
+            
+            gamma_list = [gamma1, gamma2, gamma3]
+            beta_list = [beta1, beta2, beta3]
 
         # pass conv_param to the forward pass for the convolutional layer
-        conv_param = {'stride': 1, 'pad': 1}
+        conv_param = self.conv_param
 
         # pass pool_param to the forward pass for the max-pooling layer
-        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+        pool_param = self.pool_param
 
         scores = None
         
         conv_cache = {}
         conv_relu_cache = {}
         max_cache = {}
+        batch_cache = {}
         x = X.copy()
         for i in range(self.num_layers-2):
             x, conv_cache[i] = conv_forward_fast(x, W_list[i], b_list[i], conv_param)
+            
+            if use_batchnorm:
+                x, batch_cache[i] = batchnorm_forward(x, gamma_list[i], beta_list[i], bn_param)
+                
             x, conv_relu_cache[i] = relu_forward(x)
             x, max_cache[i] = max_pool_forward_fast(x, pool_param)
             
         x, conv_cache[self.num_layers-2] = conv_forward_fast(
             x, W_list[self.num_layers-2], b_list[self.num_layers-2], conv_param)
+        
+        if use_batchnorm:
+            x, batch_cache[self.num_layers-2] = batchnorm_forward(
+                x, gamma_list[self.num_layers-2], beta_list[self.num_layers-2], bn_param)
         
         x, conv_relu_cache[self.num_layers-2] = relu_forward(x)
 
@@ -538,129 +589,27 @@ class FourLayerConvNet_fast(object):
         dmax_pool = max_pool_backward_fast(daffine, max_cache[2])  
 
         dX = relu_backward(dmax_pool, conv_relu_cache[2])
+        
+        if use_batchnorm:
+            dX, grads['gamma3'], grads['beta3'] = batchnorm_backward(dX, batch_cache[2])
+            
         dX, grads['W3'], grads['b3'] = conv_backward_fast(dX, conv_cache[2])
                        
         dmax_pool = max_pool_backward_fast(dX, max_cache[1])             
         dX = relu_backward(dmax_pool, conv_relu_cache[1])
+        
+        if use_batchnorm:
+            dX, grads['gamma2'], grads['beta2'] = batchnorm_backward(dX, batch_cache[1])
+            
         dX, grads['W2'], grads['b2'] = conv_backward_fast(dX, conv_cache[1])
 
         dmax_pool = max_pool_backward_fast(dX, max_cache[0])           
         dX = relu_backward(dmax_pool, conv_relu_cache[0])
+        
+        if use_batchnorm:
+            dX, grads['gamma1'], grads['beta1'] = batchnorm_backward(dX, batch_cache[0])
+            
         dX, grads['W1'], grads['b1'] = conv_backward_fast(dX, conv_cache[0])
-
-
-        # Add regularization to the gradients
-        grads['W4'] += self.reg*W4
-        grads['W3'] += self.reg*W3
-        grads['W2'] += self.reg*W2
-        grads['W1'] += self.reg*W1
-
-        return loss, grads
-
-
-class FourLayerConvNet_naive(object):
-    # Without normalization
-    def __init__(self, input_dim=(3, 32, 32), num_filters=(32, 64, 128), filter_size=(7, 3, 3),
-                 num_classes=10, weight_scale=1e-3, reg=0.0,
-                 dtype=np.float32):
-        
-        self.params = {}
-        self.reg = reg
-        self.dtype = dtype
-
-        # Get input dimensions
-        C, H, W = input_dim
-
-        # Compute max pooling filter dimensions
-        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
-        HP = (H-pool_param['pool_height'])/pool_param['stride']+1
-        WP = (W-pool_param['pool_width'])/pool_param['stride']+1
-
-        # Set weights and biases dimension
-        weights_dim = [(num_filters[0], C, filter_size[0], filter_size[0]),
-                        (num_filters[1], num_filters[0], filter_size[1], filter_size[1]),
-                        (num_filters[2], num_filters[1], filter_size[2], filter_size[2]),
-                        (num_filters[2], num_classes)]
-        biases_dim = [num_filters[0], num_filters[1], num_filters[2], num_classes]
-
-        # Initialize weights and biases
-        num_layers = len(weights_dim)
-        for i in range(1,num_layers+1):
-            self.params['W%d' %i] = np.random.normal(loc=0.0, scale=weight_scale,
-                                                    size=weights_dim[i-1])
-            self.params['b%d' %i] = np.zeros(biases_dim[i-1])
-
-        for k, v in self.params.items():
-            self.params[k] = v.astype(dtype)
-            
-        self.num_layers = num_layers
-
-        
-    def loss(self, X, y=None):
-        
-        W1, b1 = self.params['W1'], self.params['b1']
-        W2, b2 = self.params['W2'], self.params['b2']
-        W3, b3 = self.params['W3'], self.params['b3']
-        W4, b4 = self.params['W4'], self.params['b4']
-        
-        W_list = [W1, W2, W3, W4]
-        b_list = [b1, b2, b3, b4]
-
-        # pass conv_param to the forward pass for the convolutional layer
-        conv_param = {'stride': 1, 'pad': 1}
-
-        # pass pool_param to the forward pass for the max-pooling layer
-        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
-
-        scores = None
-        
-        conv_cache = {}
-        conv_relu_cache = {}
-        max_cache = {}
-        x = X.copy()
-        for i in range(self.num_layers-2):
-            x, conv_cache[i] = conv_forward_naive(x, W_list[i], b_list[i], conv_param)
-            x, conv_relu_cache[i] = relu_forward(x)
-            x, max_cache[i] = max_pool_forward_naive(x, pool_param)
-            
-        x, conv_cache[self.num_layers-2] = conv_forward_naive(
-            x, W_list[self.num_layers-2], b_list[self.num_layers-2], conv_param)
-        
-        x, conv_relu_cache[self.num_layers-2] = relu_forward(x)
-
-        _, _, pool_height_last, pool_width_last = x.shape
-        pool_param_last = {'pool_height': pool_height_last, 'pool_width': pool_width_last, 'stride': 1}
-        x, max_cache[self.num_layers-2] = max_pool_forward_naive(x, pool_param_last)
-
-        # Compute scores
-        scores, scores_cache = affine_forward(x, W_list[-1], b_list[-1])
-
-        if y is None:
-            return scores
-
-        loss, grads = 0, {}
-
-        # Compute loss and gradient with respect to the softmax function
-        loss, dout = softmax_loss(scores, y)
-
-        # Add L2 regularization to the loss function
-        for i in range(self.num_layers):
-            loss += 0.5 * self.reg * np.sum(W_list[i] * W_list[i])
-
-        # Backward
-        daffine, grads['W4'], grads['b4'] = affine_backward(dout, scores_cache)
-        dmax_pool = max_pool_backward_naive(daffine, max_cache[2])  
-
-        dX = relu_backward(dmax_pool, conv_relu_cache[2])
-        dX, grads['W3'], grads['b3'] = conv_backward_naive(dX, conv_cache[2])
-                       
-        dmax_pool = max_pool_backward_naive(dX, max_cache[1])             
-        dX = relu_backward(dmax_pool, conv_relu_cache[1])
-        dX, grads['W2'], grads['b2'] = conv_backward_naive(dX, conv_cache[1])
-
-        dmax_pool = max_pool_backward_naive(dX, max_cache[0])           
-        dX = relu_backward(dmax_pool, conv_relu_cache[0])
-        dX, grads['W1'], grads['b1'] = conv_backward_naive(dX, conv_cache[0])
 
 
         # Add regularization to the gradients
