@@ -98,7 +98,7 @@ class TwoLayerNet(object):
     def train_bp(self, X, y, X_val, y_val,
             learning_rate=1e-3, learning_rate_decay=0.95,
             reg=5e-6, num_iters=100,
-            batch_size=200, verbose=False):
+            batch_size=200, print_every = 100, verbose = True):
         
         num_train = X.shape[0]
         iterations_per_epoch = max(num_train / batch_size, 1)
@@ -119,9 +119,9 @@ class TwoLayerNet(object):
             self.params['b1'] -= learning_rate * grads['b1'].ravel()
             self.params['b2'] -= learning_rate * grads['b2'].ravel()
 
-            if verbose and it % 100 == 0:
+            if verbose and it % print_every == 0:
                 print('iteration %d / %d: loss %f' % (it, num_iters, loss))
-                print('iteration %d / %d: train_acc %f' % ((self.predict(X_batch) == y_batch).mean()))
+                #print('iteration %d / %d: train_acc %f' % ((self.predict(X_batch) == y_batch).mean()))
 
             # Every epoch, check train and val accuracy and decay learning rate.
             if it % iterations_per_epoch == 0:
@@ -145,7 +145,7 @@ class TwoLayerNet(object):
     #Use Simulated anneling to train this model (Metropolis method)
     def train_sa(self, X, y, X_val, y_val,
             reg=5e-6, num_iters=100, step_len = 0.01,
-            batch_size=200, T_max=1, T_min=0.001, verbose=False):
+            batch_size=200, T_max=1, T_min=0.001, print_every = 100, verbose = True):
         
         acc = 0
         rej = 0
@@ -176,8 +176,6 @@ class TwoLayerNet(object):
             
             loss_new = self.loss(X_batch, y = y_batch, reg = reg)
             
-            #print('it:', it)
-            #print('loss_past:', loss_past, '  loss_new:', loss_new)
             #Metropolis Method
             ratio = np.exp((loss_past - loss_new) / T)
             #print('T:', T, 'ratio:', ratio) 
@@ -195,12 +193,137 @@ class TwoLayerNet(object):
             #stats loging
             loss_history.append(loss_past)
             
-            if verbose and it % 100 == 0:
+            if verbose and it % print_every == 0:
                 print('iteration %d / %d: loss %f' % (it, num_iters, loss_past))
-                print('iteration %d / %d: train_acc %f' % ((self.predict(X_batch) == y_batch).mean()))
+                print('iteration %d / %d: train_acc %f' % (it, num_iters, 
+                                                           (self.predict(X_batch) == y_batch).mean()))
                 print('Reject:', rej, '  Accept:', acc)
                 
                 #print(train_acc)
+
+            # Every epoch, check train and val accuracy and decay learning rate.
+            if it % iterations_per_epoch == 0:
+        
+                # Check accuracy
+                train_acc = (self.predict(X_batch) == y_batch).mean()
+                val_acc = (self.predict(X_val) == y_val).mean()
+                train_acc_history.append(train_acc)
+                val_acc_history.append(val_acc)
+                
+            T = T_max * np.exp(Tfactor * it / num_iters)
+                
+        return {
+           'params': self.params,
+          'loss_history': loss_history,
+          'train_acc_history': train_acc_history,
+          'val_acc_history': val_acc_history,
+        }
+    
+    #Use Simulated anneling with transfer probability proportional to the params (Add by SXK).
+    def train_sa_sparse(self, X, y, X_val, y_val,
+            reg=5e-6, num_iters=100, step_len = 0.01,
+            batch_size=200, T_max=1, T_min=0.001, if_sparse = False, 
+            punish_strength = 1, print_every = 100, verbose = True):
+        
+        acc = 0
+        rej = 0
+        T = np.copy(T_max)
+        Tfactor = -np.log(T_max / T_min)
+        
+        num_train = X.shape[0]
+        iterations_per_epoch = max(num_train / batch_size, 1)
+        
+        loss_history = []
+        train_acc_history = []
+        val_acc_history = []
+        
+        loss_past = loss_new = self.__INF
+        
+        # Add punishment to bad sampling
+        punish_W1, punish_b1 = np.zeros_like(self.params['W1']), np.zeros_like(self.params['b1'])
+        punish_W2, punish_b2 = np.zeros_like(self.params['W2']), np.zeros_like(self.params['b2'])
+        
+        for it in xrange(num_iters):
+    
+            W1, b1 = self.params['W1'], self.params['b1']
+            W2, b2 = self.params['W2'], self.params['b2']
+  
+            X_batch, y_batch = self.__mini_batch(X, y, num_train, batch_size)
+            
+            if if_sparse:
+                # Transfer probability is proportional to the params' value
+                trans_prob_W1 = np.abs(W1) / np.max(np.abs(W1)) + 0.1
+                trans_prob_W2 = np.abs(W2) / np.max(np.abs(W2)) + 0.1
+                #trans_prob_b1 = np.abs(b1) / np.max(np.abs(b1)) + 0.1
+                #trans_prob_b2 = np.abs(b2) / np.max(np.abs(b2)) + 0.1
+
+                trans_prob_W1[trans_prob_W1 > 1] = 1
+                trans_prob_W2[trans_prob_W2 > 1] = 1
+                #trans_prob_b1[trans_prob_b1 > 1] = 1
+                #trans_prob_b2[trans_prob_b2 > 1] = 1
+
+                # Decide if transfering
+                if_trans_mat_W1 = np.array(trans_prob_W1 > np.random.uniform(0, 1), dtype = np.int)
+                if_trans_mat_W2 = np.array(trans_prob_W2 > np.random.uniform(0, 1), dtype = np.int)
+                #if_trans_mat_b1 = np.array(trans_prob_b1 > np.random.uniform(0, 1), dtype = np.int)
+                #if_trans_mat_b2 = np.array(trans_prob_b2 > np.random.uniform(0, 1), dtype = np.int)
+
+                # Update values (multiply T)
+                W1_update = step_len * np.random.uniform(-1, 1, W1.shape) * if_trans_mat_W1 * T
+                b1_update = step_len * np.random.uniform(-1, 1, b1.shape) * T
+                W2_update = step_len * np.random.uniform(-1, 1, W2.shape) * if_trans_mat_W2 * T
+                b2_update = step_len * np.random.uniform(-1, 1, b2.shape) * T
+            
+            else:
+                W1_update = step_len * np.random.uniform(-1, 1, W1.shape) * T
+                b1_update = step_len * np.random.uniform(-1, 1, b1.shape) * T
+                W2_update = step_len * np.random.uniform(-1, 1, W2.shape) * T
+                b2_update = step_len * np.random.uniform(-1, 1, b2.shape) * T
+            
+            self.params['W1'] = W1 + W1_update - punish_W1
+            self.params['b1'] = b1 + b1_update - punish_b1
+            self.params['W2'] = W2 + W2_update - punish_W2
+            self.params['b2'] = b2 + b2_update - punish_b2
+            
+            loss_new = self.loss(X_batch, y = y_batch, reg = reg)
+            
+            #Metropolis Method
+            ratio = np.exp((loss_past - loss_new) / T)
+            
+            if it >= 1:
+                punish_W1 = punish_W1 * 0.9 + (1 - ratio) * W1_update * punish_strength
+                punish_b1 = punish_b1 * 0.9 + (1 - ratio) * b1_update * punish_strength
+                punish_W2 = punish_W2 * 0.9 + (1 - ratio) * W2_update * punish_strength
+                punish_b2 = punish_b2 * 0.9 + (1 - ratio) * b2_update * punish_strength
+            
+            thres = np.random.uniform(0,1)
+            if ratio < thres : # Reject new solution
+                self.params['W1'] = W1
+                self.params['b1'] = b1
+                self.params['W2'] = W2
+                self.params['b2'] = b2
+                rej += 1
+                
+            else : #Accept new solution
+                loss_past = loss_new
+                acc += 1
+
+            #stats loging
+            loss_history.append(loss_past)
+            
+            if verbose and it % print_every == 0:
+                print('iteration %d / %d: loss %f' % (it, num_iters, loss_past))
+                print('iteration %d / %d: train_acc %f' % (it, num_iters, 
+                                                           (self.predict(X_batch) == y_batch).mean()))
+                print('Ratio:', ratio, '  Reject:', rej, '  Accept:', acc)
+                
+                if if_sparse:
+                    print('%d / %d W1 params change' % (np.sum(if_trans_mat_W1), W1.shape[0]*W1.shape[1]))
+                    #print(np.sum(if_trans_mat_b1), b1.shape[0])
+                    #print(np.sum(if_trans_mat_W2), W2.shape[0]*W2.shape[1])
+                    #print(np.sum(if_trans_mat_b2), b2.shape[0])
+                    
+                #print('Punish for W1 mean %f, max %f' % (np.mean(punish_W1), np.max(punish_W1)))
 
             # Every epoch, check train and val accuracy and decay learning rate.
             if it % iterations_per_epoch == 0:
@@ -445,9 +568,9 @@ class TwoLayerNet(object):
     
 
 class FourLayerConvNet_fast(object):
-    # Without normalization
+    # Add batch normalization
     def __init__(self, input_dim=(3, 32, 32), num_filters=(32, 64, 128), filter_size=(7, 3, 3),
-                 num_classes=10, weight_scale=1e-3, reg=0.0,
+                 num_classes=10, weight_scale=1e-3, reg=0.0, use_batchnorm = False,
                  dtype=np.float32):
         
         self.params = {}
@@ -458,9 +581,10 @@ class FourLayerConvNet_fast(object):
         C, H, W = input_dim
 
         # Compute max pooling filter dimensions
-        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
-        HP = (H-pool_param['pool_height'])/pool_param['stride']+1
-        WP = (W-pool_param['pool_width'])/pool_param['stride']+1
+        self.conv_param = {'stride': 1, 'pad': 1}
+        self.pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+        HP = (H-self.pool_param['pool_height'])/self.pool_param['stride']+1
+        WP = (W-self.pool_param['pool_width'])/self.pool_param['stride']+1
 
         # Set weights and biases dimension
         weights_dim = [(num_filters[0], C, filter_size[0], filter_size[0]),
@@ -468,6 +592,25 @@ class FourLayerConvNet_fast(object):
                         (num_filters[2], num_filters[1], filter_size[2], filter_size[2]),
                         (num_filters[2], num_classes)]
         biases_dim = [num_filters[0], num_filters[1], num_filters[2], num_classes]
+        
+        num_params = weights_dim[i]
+        
+        # Calculate the dimensions of each feature maps (to decide the dimensions of BN params).
+        #Assert input is square
+        if use_batchnorm:
+            x_size1 = ((input_dim[1]+2*self.conv_param['pad']-filter_size[1])//self.conv_param['stride']+1)**2 
+            x_dim1 = int(num_filters[0] * x_size1)
+
+            #Assert pool size is square
+            x_size2 = ((x_size1 - self.pool_param['pool_height']) // self.pool_param['stride'] + 1) ** 2 
+            x_size2 = ((x_size2+2*self.conv_param['pad']-filter_size[2])//self.conv_param['stride']+1)**2 
+            x_dim2 = int(num_filters[1] * x_size2)
+
+            x_size3 = ((x_size2 - self.pool_param['pool_height']) // self.pool_param['stride'] + 1) ** 2
+            x_size3 = ((x_size3+2*self.conv_param['pad']-filter_size[2])//self.conv_param['stride']+1)**2 
+            x_dim3 = int(num_filters[2] * x_size3)
+
+            x_dims = [x_dim1, x_dim2, x_dim3, num_filters[2]]
 
         # Initialize weights and biases
         num_layers = len(weights_dim)
@@ -475,14 +618,23 @@ class FourLayerConvNet_fast(object):
             self.params['W%d' %i] = np.random.normal(loc=0.0, scale=weight_scale,
                                                     size=weights_dim[i-1])
             self.params['b%d' %i] = np.zeros(biases_dim[i-1])
+            
+            if use_batchnorm:
+                self.params['gamma%d' %i] = np.ones(x_dims[i-1])
+                self.params['beta%d' %i] = np.zeros(x_dims[i-1])
 
         for k, v in self.params.items():
             self.params[k] = v.astype(dtype)
             
         self.num_layers = num_layers
+        self.use_batchnorm = use_batchnorm
 
         
     def loss(self, X, y=None):
+        mode = 'test' if y is None else 'train'
+        
+        bn_param = {}
+        bn_param['mode'] = mode
         
         W1, b1 = self.params['W1'], self.params['b1']
         W2, b2 = self.params['W2'], self.params['b2']
@@ -491,26 +643,44 @@ class FourLayerConvNet_fast(object):
         
         W_list = [W1, W2, W3, W4]
         b_list = [b1, b2, b3, b4]
+        
+        use_batchnorm = self.use_batchnorm
+        if use_batchnorm:
+            gamma1, beta1 = self.params['gamma1'], self.params['beta1']
+            gamma2, beta2 = self.params['gamma2'], self.params['beta2']
+            gamma3, beta3 = self.params['gamma3'], self.params['beta3']
+            
+            gamma_list = [gamma1, gamma2, gamma3]
+            beta_list = [beta1, beta2, beta3]
 
         # pass conv_param to the forward pass for the convolutional layer
-        conv_param = {'stride': 1, 'pad': 1}
+        conv_param = self.conv_param
 
         # pass pool_param to the forward pass for the max-pooling layer
-        pool_param = {'pool_height': 2, 'pool_width': 2, 'stride': 2}
+        pool_param = self.pool_param
 
         scores = None
         
         conv_cache = {}
         conv_relu_cache = {}
         max_cache = {}
+        batch_cache = {}
         x = X.copy()
         for i in range(self.num_layers-2):
             x, conv_cache[i] = conv_forward_fast(x, W_list[i], b_list[i], conv_param)
+            
+            if use_batchnorm:
+                x, batch_cache[i] = batchnorm_forward(x, gamma_list[i], beta_list[i], bn_param)
+                
             x, conv_relu_cache[i] = relu_forward(x)
             x, max_cache[i] = max_pool_forward_fast(x, pool_param)
             
         x, conv_cache[self.num_layers-2] = conv_forward_fast(
             x, W_list[self.num_layers-2], b_list[self.num_layers-2], conv_param)
+        
+        if use_batchnorm:
+            x, batch_cache[self.num_layers-2] = batchnorm_forward(
+                x, gamma_list[self.num_layers-2], beta_list[self.num_layers-2], bn_param)
         
         x, conv_relu_cache[self.num_layers-2] = relu_forward(x)
 
@@ -538,14 +708,26 @@ class FourLayerConvNet_fast(object):
         dmax_pool = max_pool_backward_fast(daffine, max_cache[2])  
 
         dX = relu_backward(dmax_pool, conv_relu_cache[2])
+        
+        if use_batchnorm:
+            dX, grads['gamma3'], grads['beta3'] = batchnorm_backward(dX, batch_cache[2])
+            
         dX, grads['W3'], grads['b3'] = conv_backward_fast(dX, conv_cache[2])
                        
         dmax_pool = max_pool_backward_fast(dX, max_cache[1])             
         dX = relu_backward(dmax_pool, conv_relu_cache[1])
+        
+        if use_batchnorm:
+            dX, grads['gamma2'], grads['beta2'] = batchnorm_backward(dX, batch_cache[1])
+            
         dX, grads['W2'], grads['b2'] = conv_backward_fast(dX, conv_cache[1])
 
         dmax_pool = max_pool_backward_fast(dX, max_cache[0])           
         dX = relu_backward(dmax_pool, conv_relu_cache[0])
+        
+        if use_batchnorm:
+            dX, grads['gamma1'], grads['beta1'] = batchnorm_backward(dX, batch_cache[0])
+            
         dX, grads['W1'], grads['b1'] = conv_backward_fast(dX, conv_cache[0])
 
 
