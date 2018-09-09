@@ -1,3 +1,10 @@
+#Author:  SYH & SXK
+#DATE:    2018.9.8
+#TASK:    NN with SA
+#Team:    No.0201
+
+#Defines the network structure and training functions
+
 from __future__ import print_function
 
 import numpy as np
@@ -137,7 +144,7 @@ class TwoLayerNet(object):
     #Use Simulated anneling to train this model (Metropolis method)
     def train_sa(self, X, y, X_val, y_val,
             reg=5e-6, num_iters=100, step_len = 0.01,
-            batch_size=200, T_max=10, T_min=0.1, verbose=False):
+            batch_size=200, T_max=1, T_min=0.01, verbose=False):
         
       
         T = np.copy(T_max)
@@ -201,7 +208,7 @@ class TwoLayerNet(object):
           'val_acc_history': val_acc_history,
         }
     
-    #Experiment by SYH
+    #Training algorithm in our paper
     def train_test(self, X, y, X_val, y_val,
             reg=0.01, num_iters=100, step_len = 5e-4, sigma = 1e-10,
             batch_size=200, T_max=1, T_min=1, verbose=False):
